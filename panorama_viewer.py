@@ -24,21 +24,27 @@
 # from qgis.PyQt.QtCore import QSettings, QTranslator, QCoreApplication
 # from qgis.PyQt.QtGui import QIcon
 from qgis.PyQt.QtWidgets import QAction, QApplication
-from PyQt5.QtWidgets import QWidget, QProgressBar, QVBoxLayout
+from qgis.PyQt.QtWidgets import QWidget, QProgressBar, QVBoxLayout
 from qgis._core import QgsApplication
-from PyQt5.QtGui import *
-from PyQt5.QtCore import *
+from qgis.PyQt.QtGui import *
+from qgis.PyQt.QtCore import *
+
+web_widgets_available = False
+try:
+    from qgis.PyQt.QtWebKitWidgets import QWebView, QWebPage, QWebInspector
+    from qgis.PyQt.QtWebKit import QWebSettings
+    from qgis.PyQt.QtGui import QSurfaceFormat
+    web_widgets_available = True
+except:
+    pass
 
 # Initialize Qt resources from file resources.py
-from .resources import *
 # Import the code for the dialog
 from .panorama_viewer_dialog import PanoramaViewerDialog
 import os.path
 screen = QApplication.primaryScreen()
-size =screen.size()
+size = screen.size()
 w, h = size.width(), size.height()
-
-
 
 class PanoramaViewer:
     """QGIS Plugin Implementation."""
@@ -98,7 +104,7 @@ class PanoramaViewer:
         text,
         callback,
         enabled_flag=True,
-        add_to_menu=True,
+        add_to_menu=False,
         add_to_toolbar=True,
         status_tip=None,
         whats_this=None,
@@ -169,7 +175,7 @@ class PanoramaViewer:
     def initGui(self):
         """Create the menu entries and toolbar icons inside the QGIS GUI."""
 
-        icon_path = ':/plugins/panorama_viewer/icon.png'
+        icon_path = QIcon(os.path.join(self.plugin_dir, "icon.png"))
         self.add_action(
             icon_path,
             text=self.tr(u'Panorama Viewer'),
@@ -178,10 +184,13 @@ class PanoramaViewer:
 
         # will be set False in run()
         self.first_start = True
+        self.dlg = None
 
 
     def unload(self):
         """Removes the plugin menu item and icon from QGIS GUI."""
+        if self.dlg:
+            self.dlg.close()
         for action in self.actions:
             self.iface.removePluginMenu(
                 self.tr(u'&Panorama Viewer'),
@@ -190,30 +199,15 @@ class PanoramaViewer:
 
 
     def run(self):
-        if not self.plugin_is_opened:
-            self.dlg = PanoramaViewerDialog(self)
-            self.iface.addDockWidget(Qt.RightDockWidgetArea, self.dlg) 
-            # self.dlg.setFloating(True)
-            self.dlg.show()
-            self.plugin_is_opened = True
-            # self.dlg.resize(1270, 720); 
-            # self.dlg.move(w-int(w/2)-635, h-int(h/2)-360)
+        if not self.plugin_is_opened:   
+            if web_widgets_available:
+                self.dlg = PanoramaViewerDialog(self)
+                self.iface.addDockWidget(Qt.RightDockWidgetArea, self.dlg) 
+                self.dlg.show()
+                self.plugin_is_opened = True
+            else:
+                QMessageBox.information(None, "Compatibility issue", "This version of QGIS does not support the QtWebKitWidgets components required for the plugin to work.\nA temporary solution is to use QGIS version 3.x.x with Qt5.")
         else:
             self.iface.messageBar().pushMessage("Notification", "Plugin is already opened", level=0)
-        # """Run method that performs all the real work"""
 
-        # # Create the dialog with elements (after translation) and keep reference
-        # # Only create GUI ONCE in callback, so that it will only load when the plugin is started
-        # if self.first_start == True:
-        #     self.first_start = False
-        #     self.dlg = PanoramaViewerDialog()
-
-        # # show the dialog
-        # self.dlg.show()
-        # # Run the dialog event loop
-        # result = self.dlg.exec_()
-        # # See if OK was pressed
-        # if result:
-        #     # Do something useful here - delete the line containing pass and
-        #     # substitute with your code.
-        #     pass
+      

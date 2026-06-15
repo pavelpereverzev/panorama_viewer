@@ -23,11 +23,13 @@
 """
 
 # -*- coding: utf-8 -*-
-
+import sys 
 import os
 import json 
 import math 
 import requests
+from functools import partial
+import socket
 
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 from urllib.parse import urlparse
@@ -37,10 +39,11 @@ from qgis._core import *
 from qgis._gui import *
 
 
-from PyQt5.QtWebKitWidgets import QWebView, QWebPage
-from PyQt5 import *
-from PyQt5 import QtCore
-from PyQt5.QtWidgets import (
+from qgis.PyQt.QtWebKitWidgets import QWebView, QWebPage, QWebInspector
+from qgis.PyQt import *
+from qgis.PyQt import QtCore
+from qgis.PyQt.QtWidgets import (
+    QApplication,
     QVBoxLayout,
     QWidget,
     QCheckBox,
@@ -56,24 +59,22 @@ from PyQt5.QtWidgets import (
     QStyle,
     QLabel
 )
-from PyQt5.QtGui import *
-from PyQt5.QtCore import *
+from qgis.PyQt.QtGui import *
+from qgis.PyQt.QtCore import *
 
 # taken from @lepetitchu's comment here https://github.com/pavelpereverzev/panorama_viewer/issues/2#issuecomment-2771276606
-from PyQt5.QtGui import QSurfaceFormat
+from qgis.PyQt.QtWebKit import QWebSettings
+from qgis.PyQt.QtGui import QSurfaceFormat
 # maybe placed in the constructor of widget
 format = QSurfaceFormat()
 format.setProfile(QSurfaceFormat.CompatibilityProfile)
 QSurfaceFormat.setDefaultFormat(format)
 
-
 base_folder = os.path.dirname(os.path.realpath(__file__))
-# base_folder =  r'C:\Users\Pereverzev.PV\AppData\Roaming\QGIS\QGIS3\profiles\default\python\plugins\panorama_viewer'
-
 HOST, PORT = "", 8030
 
 def circle_geom(pnt, w, h):
-    # форма круга для раструба панорамы
+    """panorama circle geometry generator, used for direction arrow creation"""
 
     list_circle =[]
     for i in range(0,36):
@@ -85,7 +86,6 @@ def circle_geom(pnt, w, h):
     ellipse_geom = QgsGeometry.fromPolygonXY([list_circle])
     return ellipse_geom
 
-
 def read_in_chunks(file_object, chunk_size=None):
     """Read file by chunk index """
     while True:
@@ -93,7 +93,6 @@ def read_in_chunks(file_object, chunk_size=None):
         if not data:
             break
         yield data
-
 
 class GetPanorama(QWidget):
     """Get panorama image from web or local storage
@@ -115,7 +114,7 @@ class GetPanorama(QWidget):
     def download(self, url):
         """Web loader which also writes file chunk by chunk """
         self.main_app.pbar.setDisabled(False)
-        r = requests.get(url, allow_redirects=True, stream=True)
+        r = requests.get(url, allow_redirects=True, stream=True, timeout=120)
         if r.status_code != 200:
             return False
         total_length = int(r.headers.get("content-length"))
@@ -155,7 +154,6 @@ class GetPanorama(QWidget):
         self.main_app.pbar.setDisabled(True)
         return True
 
-
 class QuietHandler(SimpleHTTPRequestHandler):
     """Web server handler, which will not write any message
     in python console. As a result, no need to open python console
@@ -165,7 +163,6 @@ class QuietHandler(SimpleHTTPRequestHandler):
     def log_message(self, format, *args):
         pass
 
-
 class HttpDaemon(QtCore.QThread):
     """Simple web server class
     """
@@ -173,16 +170,63 @@ class HttpDaemon(QtCore.QThread):
     def __init__(self, parent, path):
         super(QThread, self).__init__()
         self.server_path = path
+        self.server = None
+        self.is_running = False
+        self.server_host = self.find_free_ip(PORT)
+        self.setTerminationEnabled(True)
+        if not self.server_host:
+            raise RuntimeError("Couldn't found free IP-address in 127.x.x.x ranges")
+    
+    @staticmethod
+    def find_free_ip(port):
+        """looking for a free local IP"""
+        for i in range(1, 255):
+            test_host = f"127.0.0.{i}"
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                try:
+                    s.bind((test_host, port))
+                    return test_host  # if bind is ok, return it
+                except OSError:
+                    continue
+        return None
 
     def run(self):
-        os.chdir(self.server_path)
-        self.server = HTTPServer((HOST, PORT), QuietHandler)
+        # os.chdir(self.server_path)
+        handler = partial(QuietHandler, directory=self.server_path)
+        self.server = HTTPServer((self.server_host, PORT), handler)
+        self.is_running = True
         self.server.serve_forever()
 
     def stop(self):
-        self.server.shutdown()
-        self.server.socket.close()
+        if self.server:
+            self.is_running = False
+            try:
+                self.server.shutdown()
+            except:
+                pass 
+            try:
+                self.server.socket.close()
+            except:
+                pass 
+            try:
+                self.server.server_close()
+            except:
+                pass 
+            if not self.wait(500):
+                self.terminate()
+                self.wait()
 
+    def stop_and_cleanup(self):
+        """Full stop"""
+        self.stop()
+        
+        # delete temp pano file
+        image_path = os.path.join(self.server_path, "image.JPG")
+        if os.path.exists(image_path):
+            try:
+                os.remove(image_path)
+            except:
+                pass
 
 class PanoramaViewerDialog(QDockWidget):
     """Main widget is a dock widget located on the right bottom corner """
@@ -191,30 +235,93 @@ class PanoramaViewerDialog(QDockWidget):
         QDockWidget.__init__(self)
         self.wrapper = wrapper
         self.resize(480, 480)
-        self.setWindowTitle("PanoramaView")
+        self.setWindowTitle("Panorama Viewer")
+        self.setWindowFlags(Qt.WindowType.Tool)
+
+        # variables
+        self.overlay = None
+        self.kolba_version = 1
+        self.isFloating = False
+
         self.gv = PanoramaViewer(self)
-        self.gv.setMinimumSize(QSize(480, 480))
+        # self.gv.setMinimumSize(QSize(480, 480))
         self.setWidget(self.gv)
-        self.closeEvent = self.onDestroy
-        self.wrapper.plugin_is_opened = True
+        #self.closeEvent = self.onDestroy
+        self.topLevelChanged.connect(self.tl_change)
+        
+    def tl_change(self, state):
+        if state:
+            self.isFloating = True
+            self.setWindowFlags(Qt.WindowType.Tool)
+            self.show()
+        else:
+            self.isFloating = False
+            # self.title_bar.show()
+
+    def floating_set(self):
+        if not self.isFloating:
+            self.isFloating = True
+            self.setFloating(True)
+        else:
+            self.isFloating = False
+            self.setFloating(False)
+
+    def custom_action(self):
+        print("Custom header button clicked!")
+    
+    def closeEvent(self, event):
+        try:
+            iface.mapCanvas().selectionChanged.disconnect(
+                self.gv.define_selection
+            )
+        except:
+            print('cannot disconnect') 
+        try:
+            self.gv.canvas.scaleChanged.disconnect(self.gv.scale_handler)
+        except:
+            pass
+        if self.gv:
+            if self.gv.httpd:
+                self.gv.httpd.stop()
+                self.gv.httpd = None
+            if self.gv.rubberBandArrow:
+                self.gv.rubberBandArrow.reset()
+                self.gv.rubberBandArrow = None
+            if self.gv.view:
+                self.gv.view.stop()
+                self.gv.view.load(QUrl("about:blank"))
+                if self.gv.view.page():
+                    self.gv.view.page().deleteLater()
+                self.gv.view.deleteLater()
+                self.gv.view = None
+
+        self.wrapper.plugin_is_opened = False
+        event.accept()
 
     def onDestroy(self, e):
-        """Widget close handler """
         self.wrapper.plugin_is_opened = False
-        self.gv.reset_tr()
-        iface.mapCanvas().selectionChanged.disconnect(self.gv.define_selection)
-        if self.gv.rubberBandArrow:
-            self.gv.rubberBandArrow.reset()
-
+        self.close()
 
 class WebPage(QWebPage):
     def __init__(self, main_view):
         super().__init__()
         self.mv = main_view
-    def javaScriptConsoleMessage(self, msg, line, source):
-        data = json.loads(msg)
-        self.mv.update_arrow(data)
 
+    def javaScriptConsoleMessage(self, msg, line, source):
+        if all(n in msg for n in ['yaw', 'pitch', 'zoom']):
+            data = json.loads(msg)
+            self.mv.yaw = data.get('yaw', self.mv.yaw)
+            self.mv.zoom = data.get('zoom', self.mv.zoom)
+            self.mv.pitch = data.get('pitch', self.mv.pitch)
+            self.mv.update_arrow(data)
+
+        if 'hide_controls' in msg:
+            data = json.loads(msg)
+            self.mv.set_controls_visibility(data)
+        
+        if 'open_in_browser' in msg:
+            data = json.loads(msg)
+            QDesktopServices.openUrl(QUrl("http://{}:{}/index_{}.html?angle={}&zoom={}&pitch={}&silent_mode=1".format(self.mv.httpd.server_host, PORT, self.mv.viewers[self.mv.combo_viewer.currentText()], self.mv.yaw, self.mv.zoom, self.mv.pitch)))
 
 class PanoramaViewer(QMainWindow):
     """Widget interface """
@@ -225,7 +332,6 @@ class PanoramaViewer(QMainWindow):
         # init settings
         self.wrapper = parent
         self.setWindowFlags(self.windowFlags() | QtCore.Qt.WindowStaysOnTopHint)
-        self.setWindowTitle("PanoramaView")
         self.setGeometry(800, 650, 1200, 880)
 
         self.rubberBandArrow = QgsRubberBand(iface.mapCanvas(), QgsWkbTypes.PolygonGeometry)
@@ -234,15 +340,21 @@ class PanoramaViewer(QMainWindow):
         self.rubberBandArrow.setLineStyle(1)
         self.rubberBandArrow.setWidth(2)
 
-        self.yaw = 70.0
+        self.yaw = 0.0
+        self.angle = 0.0
+        self.zoom = 0.0
+        self.pitch = 0.0
         self.canvas = iface.mapCanvas()
         self.x = None 
         self.y = None 
-
+        self.platform = 'darwin' if sys.platform == 'darwin' else 'other'
+        self.pbar_original_height = None
+        self.controls_visible = True
         
         # custom attrs
         self.httpd = None
         self.current_layer = None
+        self.pano_loaded = False
 
         # layout 
         centralWidget = QWidget()
@@ -254,13 +366,28 @@ class PanoramaViewer(QMainWindow):
 
         # webview setup
         self.view = QWebView(self)
+        self.view.settings().setAttribute(QWebSettings.DeveloperExtrasEnabled, True)
         sp = self.view.sizePolicy()
         sp.setVerticalPolicy(QSizePolicy.Expanding)
         self.view.setSizePolicy(sp)
         self.view.settings().setObjectCacheCapacities(0, 0, 0)
 
+        # self.view = browser.settings()
+        self.view.settings().setAttribute(QWebSettings.WebGLEnabled, True)
+        self.view.settings().setAttribute(QWebSettings.AcceleratedCompositingEnabled, True)
+        self.view.settings().setAttribute(QWebSettings.TiledBackingStoreEnabled, True)
+        self.view.settings().setAttribute(QWebSettings.DeveloperExtrasEnabled, True)
+        self.view.settings().setAttribute(QWebSettings.JavascriptEnabled, True)
+        self.view.settings().setAttribute(QWebSettings.JavascriptCanOpenWindows, True)
+        self.view.settings().setAttribute(QWebSettings.LocalStorageEnabled, True)
+        self.view.settings().setAttribute(QWebSettings.OfflineStorageDatabaseEnabled, True)
+        self.view.settings().setAttribute(QWebSettings.OfflineWebApplicationCacheEnabled, True)
+
         self.page = WebPage(self)
         self.view.setPage(self.page)
+        self.inspector = QWebInspector()
+        
+        # self.view.page().setDevToolsPage(self.inspector.page())
 
         # other widgets
         self.lbl_layers = QLabel("Layer:")
@@ -273,12 +400,28 @@ class PanoramaViewer(QMainWindow):
         self.update_layers.setFixedWidth(30)
         self.update_layers.setIcon(self.style().standardIcon(QStyle.SP_BrowserReload))
 
+        self.viewers = {"Pannellum":'pannellum', "Three.js": 'threejs'}
+        if sys.platform == 'darwin':
+            del self.viewers["Pannellum"]
+        
+        self.lbl_viewer = QLabel("Viewer:")
+        self.combo_viewer = QComboBox()
+        self.combo_viewer.addItems(self.viewers)
+
+
         self.auto_update = QCheckBox("Auto-update view")
         self.show_directrions = QCheckBox("Show directions")
+        self.direction_field_label = QLabel("Angles field:")
+        self.direction_field = QComboBox()
+        self.direction_field.setDisabled(True)
 
         self.lt_options = QHBoxLayout()
         self.lt_options.addWidget(self.auto_update)
+        self.lt_options.addStretch(1)
+
         self.lt_options.addWidget(self.show_directrions)
+        self.lt_options.addWidget(self.direction_field_label)
+        self.lt_options.addWidget(self.direction_field)
         self.lt_options.addStretch()
 
         self.btn_find_panorama = QPushButton("View panorama")
@@ -286,21 +429,32 @@ class PanoramaViewer(QMainWindow):
         self.pbar = QProgressBar()
         self.pbar.setDisabled(True)
 
+        # self.btn_collapse = QPushButton('123', self)
+        # self.btn_collapse.setFixedSize(10, 10) # Make it tiny
+        # self.btn_collapse.setIcon(QIcon(":images/themes/default/mIconCollapseSmall.svg"))
+
         # layout setup
         # 1. browser widget
         browser_layout.addWidget(self.view)
 
         # 2. layer-field selectors
-        grid_layout.addWidget(self.lbl_layers, 1, 1, 1, 2, alignment=Qt.AlignBottom)
-        grid_layout.addWidget(self.lbl_fields, 1, 3, 1, 2, alignment=Qt.AlignBottom)
-        grid_layout.addWidget(self.cmb_layers, 2, 1, 1, 2, alignment=Qt.AlignBottom)
-        grid_layout.addWidget(self.cmb_fields, 2, 3, 1, 2, alignment=Qt.AlignBottom)
-        grid_layout.addWidget(self.update_layers, 2, 6, 1, 1, alignment=Qt.AlignBottom)
+        grid_layout.addWidget(self.lbl_layers,    1, 1, 1, 1)
+        grid_layout.addWidget(self.cmb_layers,    1, 2, 1, 2)
+        grid_layout.addWidget(self.lbl_fields,    1, 4, 1, 1)
+        grid_layout.addWidget(self.cmb_fields,    1, 5, 1, 2)
+        grid_layout.addWidget(self.lbl_viewer,    1, 7, 1, 1)
+        grid_layout.addWidget(self.combo_viewer,  1, 8, 1, 1)
+
+        grid_layout.addWidget(self.update_layers, 1, 9, 1, 1)
+
+        grid_layout.setColumnStretch(2, 2)
+        grid_layout.setColumnStretch(5, 2)
 
         # 3. controls and progress bar
         control_layout.addLayout(self.lt_options)
         control_layout.addWidget(self.btn_find_panorama)
         control_layout.addWidget(self.pbar)
+
 
         # 4. adding all layouts 
         centralLayout.addLayout(browser_layout)
@@ -310,11 +464,18 @@ class PanoramaViewer(QMainWindow):
         self.setCentralWidget(centralWidget)
 
         # triggers
+        iface.mapCanvas().selectionChanged.connect(self.define_selection)
+        self.scale_handler = lambda: self.update_arrow({'yaw': self.yaw, 'zoom': self.zoom})
+        self.canvas.scaleChanged.connect(self.scale_handler)
+
         self.btn_find_panorama.clicked.connect(self.get_pic)
         self.update_layers.clicked.connect(self.load_layers)
         self.auto_update.stateChanged.connect(self.auto_upd_check)
         self.cmb_layers.currentIndexChanged.connect(self.update_current_layer)
-        iface.mapCanvas().selectionChanged.connect(self.define_selection)
+        self.show_directrions.stateChanged.connect(self.set_directrions)
+        self.direction_field.currentIndexChanged.connect(self.get_dir)
+        self.combo_viewer.currentIndexChanged.connect(self.get_pic)
+        
         self.load_layers()
 
         # launching web server
@@ -322,15 +483,104 @@ class PanoramaViewer(QMainWindow):
         self.httpd.start()
 
 
-    def update_arrow(self, data):
-        if not self.show_directrions.isChecked():
-            return 
-        angle = float(data.get('yaw', 0)) 
-        zoom = float(data.get('zoom', 0)) 
+        self.inspector.setPage(self.view.page())
 
-        self.yaw = 0.0 if not self.yaw else self.yaw
-        yaw = 1/float(self.yaw)*50
+        # inspector setup for debugging purposes, can be commented out in production
+        # self.view.page().settings().setAttribute(
+        #     self.view.page().settings().WebAttribute.DeveloperExtrasEnabled, True
+        # )
+        # self.view.page().javaScriptConsoleMessage = lambda msg, line, src: print(f"{msg}")
+
+    def set_controls_visibility(self, data):
+        self.controls_visible = data.get('hide_controls', False)
+        if self.controls_visible:
+            self.lbl_layers.hide()
+            self.cmb_layers.hide()
+            self.lbl_fields.hide()
+            self.cmb_fields.hide()
+            self.update_layers.hide()
+            self.auto_update.hide()
+            self.show_directrions.hide()
+            self.direction_field_label.hide()
+            self.direction_field.hide()
+            self.btn_find_panorama.hide()
+            self.lbl_viewer.hide()
+            self.combo_viewer.hide()
+            self.pbar.setMaximumHeight(5)
+            self.pbar.setFormat("")
+            self.controls_visible = False
+        else:
+            self.lbl_layers.show()
+            self.cmb_layers.show()
+            self.lbl_fields.show()
+            self.cmb_fields.show()
+            self.update_layers.show()
+            self.auto_update.show()
+            self.show_directrions.show()
+            self.direction_field_label.show()
+            self.direction_field.show()
+            self.btn_find_panorama.show()
+            self.lbl_viewer.show()
+            self.combo_viewer.show()
+            self.pbar.setMaximumHeight(self.pbar_original_height)
+            self.pbar.setFormat("%p%")
+            self.controls_visible = True
+    
+    def showEvent(self, event):
+        hgt_button = self.update_layers.frameGeometry().height()
+        self.cmb_layers.setMinimumHeight(hgt_button)
+        self.cmb_fields.setMinimumHeight(hgt_button)
+        self.direction_field.setMinimumHeight(hgt_button)
+        self.btn_find_panorama.setMinimumHeight(hgt_button)
+        self.pbar_original_height = self.pbar.frameGeometry().height()
+
+    def get_dir(self):
+        if not self.show_directrions.isChecked():
+            return
+        if self.direction_field.currentText() != '- none -':
+            current_feature = self.current_layer.selectedFeatures()
+            if not current_feature:
+                return
+            self.angle = current_feature[0][self.direction_field.currentText()]
+            try:
+                self.angle = int(self.angle)
+            except: 
+                self.angle = 0.0
+            self.view.page().mainFrame().evaluateJavaScript(
+                "rotateToAngle({});".format(self.angle)
+            )
+            
+    def set_directrions(self):
+        if not self.show_directrions.isChecked():
+            self.direction_field.setDisabled(True)
+            self.rubberBandArrow.reset()
+        else:
+            current_crs = QgsProject.instance().crs().authid()
+            if QgsProject.instance().crs().mapUnits() == QgsUnitTypes.DistanceUnit.Degrees:
+                self.warning_message("The current project coordinate system {} has degrees map units.\nTo view directions, please switch the project CRS to a projected (metric) one, such as EPSG:3857.".format(current_crs))
+            self.direction_field.setDisabled(False)
+            self.update_arrow({'yaw': self.yaw, 'zoom': self.zoom})
+
+    def update_arrow(self, data):
+        if not self.show_directrions.isChecked() or not self.x or not self.y:
+            return 
+        if not self.pano_loaded:
+            return
+        angle_check = data.get('yaw', self.angle)
+        if angle_check is None:
+            self.angle = 0.0
+        else:
+            self.angle = float(angle_check) 
+            if self.combo_viewer.currentText() == "Three.js":
+                self.angle-=90
+        self.yaw = 0.0 if angle_check is None else self.angle
+        if self.combo_viewer.currentText() == "Three.js":
+            self.yaw+=90
+
+        zoom = float(data.get('zoom', 0)) 
+        self.zoom = zoom
         yaw = zoom * 0.6
+        yaw = 50 if not yaw else zoom * 0.6
 
         side_w = self.canvas.scale()/250 + self.canvas.scale()/yaw/5
         side_w_plus = self.canvas.scale()/450
@@ -341,10 +591,10 @@ class PanoramaViewer(QMainWindow):
         diff = geom_bigger.difference(geom_smaller)
 
         lst_pnts = [
-            QgsPointXY(pnt.x()+d*math.sin(math.radians(angle-yaw)), pnt.y()+d*math.cos(math.radians(angle-yaw))),
+            QgsPointXY(pnt.x()+d*math.sin(math.radians(self.angle-yaw)), pnt.y()+d*math.cos(math.radians(self.angle-yaw))),
             QgsPointXY(pnt.x(), pnt.y()),
-            QgsPointXY(pnt.x()+d*math.sin(math.radians(angle+yaw)), pnt.y()+d*math.cos(math.radians(angle+yaw))),
-            QgsPointXY(pnt.x()+d*10*math.sin(math.radians(angle)), pnt.y()+d*10*math.cos(math.radians(angle))),
+            QgsPointXY(pnt.x()+d*math.sin(math.radians(self.angle+yaw)), pnt.y()+d*math.cos(math.radians(self.angle+yaw))),
+            QgsPointXY(pnt.x()+d*10*math.sin(math.radians(self.angle)), pnt.y()+d*10*math.cos(math.radians(self.angle))),
         ]
         geom_polygon = QgsGeometry().fromPolygonXY([lst_pnts])
         new_diff = geom_polygon.intersection(diff)
@@ -352,12 +602,11 @@ class PanoramaViewer(QMainWindow):
         self.rubberBandArrow.reset()
         self.rubberBandArrow.setToGeometry(new_diff)
 
-
+       
     def define_selection(self):
         """Get pic if auto-update view is checked"""
         if self.auto_update.isChecked():
             self.get_pic()
-
 
     def auto_upd_check(self):
         """Auto-update handler to make "View panorama" button enabled/disabled """
@@ -388,7 +637,6 @@ class PanoramaViewer(QMainWindow):
         msg.warning(self, "Warning", err_text)
         return
 
- 
     def update_current_layer(self):
         """Setting current layer and its fields from combobox value"""
         self.current_layer = self.cmb_layers.currentData()
@@ -396,13 +644,17 @@ class PanoramaViewer(QMainWindow):
             layer_fields = [
                 f.name() for f in self.current_layer.fields() if f.type() == 10
             ]
+            
             self.cmb_fields.clear()
+            self.direction_field.blockSignals(True)
+            self.direction_field.clear()
             self.cmb_fields.addItems(layer_fields)
+            self.direction_field.addItems(['- none -'] + self.current_layer.fields().names())
+            self.direction_field.blockSignals(False)
 
         self.btn_find_panorama.setChecked(False)
         self.rubberBandArrow.reset()
        
-
     def reset_tr(self):
         """Reset server"""
         self.btn_find_panorama.setChecked(False)
@@ -410,15 +662,19 @@ class PanoramaViewer(QMainWindow):
         if self.httpd:
             self.httpd.stop()
 
- 
     def get_pic(self):
         """Get pic attrs from selected point and proceed to view panorama"""
-        self.rubberBandArrow.reset()
+        
         if self.cmb_fields.currentText():
             field_idx = (
                 self.current_layer.fields().names().index(self.cmb_fields.currentText())
             )
             selected_features = self.current_layer.selectedFeatures()
+            if not selected_features:
+                return
+            self.rubberBandArrow.reset()
+            
+            self.pano_loaded = False
             if not selected_features:
                 if not self.auto_update.isChecked():
                     self.warning_message("No items selected")
@@ -437,7 +693,17 @@ class PanoramaViewer(QMainWindow):
             
             result = urlparse(cf_attr)
             img_get = False
-
+            angle_field = self.direction_field.currentText()
+            angle = 0
+            self.angle = 0
+            if angle_field != '- none -':
+                angle = current_feature[angle_field]
+                try:
+                    angle = float(angle)
+                except:
+                    angle = 0.0
+                
+                self.angle = angle
             
             # panorama path check
             if cf_attr and os.path.isfile(cf_attr):
@@ -446,15 +712,20 @@ class PanoramaViewer(QMainWindow):
                 img_get = GetPanorama(self).get_pano_file(cf_attr, "download")
             else:
                 pass
-            
-            # view panorama or not
+
             if img_get:
-                self.view.load(QUrl("http://localhost:8030/index_local.html"))
+                self.angle = angle
+                QApplication.processEvents()
+                if self.combo_viewer.currentText() == "Three.js":
+                    self.view.load(QUrl("http://{}:{}/index_threejs.html?angle={}&zoom={}&controls_visible={}".format(self.httpd.server_host, PORT, self.angle, self.zoom, self.controls_visible)))
+                else:
+                    self.view.load(QUrl("http://{}:{}/index_pannellum.html?angle={}&zoom={}&controls_visible={}".format(self.httpd.server_host, PORT, self.angle, self.zoom, self.controls_visible)))
             else:
-                self.view.load(QUrl("http://localhost:8030/index_error.html"))
+                self.view.load(QUrl("http://{}:{}/index_error.html".format(self.httpd.server_host, PORT)))
+            self.pano_loaded = True
+            self.pbar.reset()
+
             return
-
-
 
 # dw = PanoramaViewerDialog(None)
 # iface.addDockWidget(Qt.RightDockWidgetArea, dw)

@@ -1,0 +1,657 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>PanoramaViewer Three.js</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            font-family: Arial, sans-serif;
+        }
+        #info {
+            position: absolute;
+            bottom: 20px;
+            left: 20px;
+            color: white;
+            background: rgba(0,0,0,0.7);
+            padding: 8px 15px;
+            border-radius: 20px;
+            font-size: 14px;
+            pointer-events: none;
+            z-index: 100;
+        }
+        #fov-indicator {
+            position: absolute;
+            bottom: 20px;
+            right: 20px;
+            color: white;
+            background: rgba(0,0,0,0.7);
+            padding: 8px 15px;
+            border-radius: 20px;
+            font-size: 14px;
+            pointer-events: none;
+            z-index: 100;
+        }
+        #loading {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            color: white;
+            background: rgba(0,0,0,0.8);
+            padding: 15px 30px;
+            border-radius: 30px;
+            font-size: 16px;
+            z-index: 1000;
+            display: none;
+        }
+        #hide_zone {
+            position: absolute;
+            bottom: 8px;
+            right: 0px;
+            width: auto;
+            height: auto;
+            z-index: 998;
+            opacity: 0;
+            transition: opacity 0.3s ease;
+            white-space: nowrap;
+            font-size: 0; 
+        }
+        
+
+        #hide_zone:hover {
+            opacity: 1;
+        }
+        
+        .control-btn {
+            display: inline-block;
+            width: 36px;
+            height: 36px;
+            cursor: pointer;
+            transition: transform 0.2s ease;
+            background: rgba(0, 0, 0, 0.2);
+            border-radius: 8px;
+            padding: 4px;
+            box-sizing: border-box;
+            margin-right: 12px;
+            vertical-align: top;
+        }
+        
+        .control-btn:last-child {
+            margin-right: 0;
+        }
+        
+        .control-btn:hover {
+            transform: scale(1.05);
+            background: rgba(0, 0, 0, 0.5);
+        }
+        
+        .control-btn:active {
+            transform: scale(0.95);
+        }
+        
+        .control-btn svg {
+            width: 100%;
+            height: 100%;
+            display: block;
+        }
+        
+        @media all and (-webkit-min-device-pixel-ratio:0) {
+            .control-btn {
+                margin-right: 8px;
+            }
+        }
+    </style>
+    <script src="three.min.js"></script>
+</head>
+<body>
+    <div id="hide_zone">
+    <div id="toggle_open_in_browser" class="control-btn">
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
+            <path d="M 4 8 V 4 h 16 V 8 M 20 16 v 4 h -16 V 16 " stroke="black" stroke-width="4" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+            <path d="M 4 8 V 4 h 16 V 8 M 20 16 v 4 h -16 V 16" stroke="white" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+            <g transform="translate(12, 12) scale(0.85) translate(-12, -12)">
+            <path d="M12 7C7 7 3.5 11 3.5 12C3.5 13 7 17 12 17C17 17 20.5 13 20.5 12C20.5 11 17 7 12 7Z" stroke="black" stroke-width="4" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+            <path d="M12 7C7 7 3.5 11 3.5 12C3.5 13 7 17 12 17C17 17 20.5 13 20.5 12C20.5 11 17 7 12 7Z" stroke="white" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+            <circle cx="12" cy="12" r=".8" stroke="black" stroke-width="4" fill="none"/>
+            <circle cx="12" cy="12" r=".8" stroke="white" stroke-width="2" fill="none"/>
+            </g>
+        </svg>
+    </div>
+    <div id="toggle_hide_controls" class="control-btn">
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
+            <path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5" stroke="black" stroke-width="4" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+            <path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5" stroke="white" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+    </div>
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+
+            const zone = document.getElementById("hide_zone");
+            const controls = document.getElementById("toggle_hide_controls");
+            const controls_br = document.getElementById("toggle_open_in_browser");
+            
+            let expanded = false;
+
+            controls.addEventListener("click", (e) => {
+                e.stopPropagation();
+                expanded = !expanded;
+                controls.innerHTML = expanded
+                    ? collapseSvg
+                    : expandSvg;
+                if(silent_mode===0){
+                    console.log(`{"hide_controls": ${expanded}}`);
+                }
+            });
+
+            controls_br.addEventListener("click", (e) => {
+                e.stopPropagation();
+                if(silent_mode===0){
+                    console.log(`{"open_in_browser": 1}`);
+                }
+            });
+
+            
+
+            const expandSvg = `
+            <svg viewBox="0 0 24 24">
+            <path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5" stroke="black" stroke-width="4" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+            <path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5" stroke="white" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+            `;
+
+            const collapseSvg = `
+            <svg viewBox="0 0 24 24">
+            <path d="M18 6 L14 10 M14 10 L18 10 M14 10 L14 6 M6 18 L10 14 M10 14 L6 14 M10 14 L10 18" stroke="black" stroke-width="4" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+            <path d="M18 6 L14 10 M14 10 L18 10 M14 10 L14 6 M6 18 L10 14 M10 14 L6 14 M10 14 L10 18" stroke="white" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+            `;
+            
+            function getQueryParam(paramName) {
+                var queryString = window.location.search.substring(1);
+                if (!queryString) return null;
+
+                var vars = queryString.split("&");
+                
+                for (var i = 0; i < vars.length; i++) {
+                    var pair = vars[i].split("=");
+                    if (decodeURIComponent(pair[0]) === paramName) {
+                        return pair[1] ? decodeURIComponent(pair[1]) : "";
+                    }
+                }
+                return null;
+            }
+
+            var angle_init = 90
+            var diff_angle
+            if (getQueryParam('angle') !== null) {
+                angle_init = angle_init + parseInt(getQueryParam('angle'));
+                diff_angle = 360 - parseInt(getQueryParam('angle')) - 90
+            }
+
+            // showing cotrols in panorama_viewer_dialog.py
+            if (getQueryParam('controls_visible') == 'True') {
+                controls_visible = true;
+            }else{
+                controls_visible = false;
+            }
+            
+            var fov = 90;
+            if (getQueryParam('zoom') !== null) {
+                fov = parseInt(getQueryParam('zoom'));
+                if(fov<30 || fov>120){
+                    fov = 90
+                }
+            }
+            var pitch = 0
+            if (getQueryParam('pitch') !== null) {
+                pitch = parseInt(getQueryParam('pitch'));
+                if(pitch<-85 || pitch>85){
+                    pitch = 0
+                }
+            }
+            var silent_mode = 0
+            if (getQueryParam('silent_mode') !== null) {
+                silent_mode = parseInt(getQueryParam('silent_mode'));
+            }
+
+            if (!controls_visible) {
+                expanded = true;
+                controls.innerHTML = collapseSvg ;
+            } else {    
+                controls.innerHTML = expandSvg ;
+            }
+
+            
+            const scene = new THREE.Scene();
+            const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+            const renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setPixelRatio(window.devicePixelRatio);
+            document.body.appendChild(renderer.domElement);
+
+            const cameraContainer = new THREE.Object3D();
+            cameraContainer.add(camera);
+            scene.add(cameraContainer);
+
+            
+            let lon = 0; 
+            let targetLon = 0;
+            lon = (diff_angle+90) * Math.PI / 180;
+            // lon = angle_init * Math.PI / 180;
+            alt_lon = diff_angle * Math.PI / 180;
+            targetLon = lon;
+
+            // angle limits
+            const minLat = -85 * Math.PI / 180;
+            const maxLat = 85 * Math.PI / 180;
+
+            let lat = 0; 
+            let targetLat = 0
+            lat = pitch * Math.PI / 180;
+            lat = Math.max(minLat, Math.min(maxLat, lat));
+            targetLat = lat;
+
+            let panoSphere = null;
+            var str_view = null
+            
+            // zoom
+            
+            const minFov = 30;
+            const maxFov = 120;
+            
+            // mouse state
+            let isMouseDown = false;
+            let lastMouseX = 0, lastMouseY = 0;
+
+            let isAnimating = false;
+            let animationRequested = false;
+            let stopAnimation = false;
+            
+            const rotationSpeed = 0.002; 
+            
+            let velocityX = 0;
+            let velocityY = 0;
+            const friction = 0.9; 
+            const inertia = 0.7;   
+
+            const geometry = new THREE.SphereGeometry(500, 64, 32);
+            const textureLoader = new THREE.TextureLoader();
+
+            // state listener and send YPZ dict to QGIS
+            function emitViewChange() {
+                yaw_current = Number((lon * 180 / Math.PI).toFixed(2))
+                yaw_change = yaw_current+180
+                yaw_change = yaw_change*-1 // -60
+                if (yaw_change<0){
+                    yaw_change = yaw_change+360 // 300
+                }
+                // diff_with_init = yaw_change - diff_angle
+                // yaw_change = angle_init-90 + diff_with_init
+
+                new_str_view = JSON.stringify({
+                    yaw: yaw_change-90,
+                    pitch: Number((lat * 180 / Math.PI).toFixed(2)),
+                    zoom: Number(fov.toFixed(2)),
+                    angle: Number(((lon * Math.PI / 180) * 180 / Math.PI).toFixed(2))
+                });
+                if (new_str_view!=str_view && silent_mode===0){
+                    console.log(new_str_view)
+                    str_view = new_str_view
+                }
+            }
+
+            function requestRender() {
+                if (stopAnimation) return;
+
+                if (!animationRequested) {
+                    animationRequested = true;
+                    requestAnimationFrame(animate);
+                }
+            }
+
+            function detectFlipByPixels(imageUrl, callback) {
+
+                var img = new Image();
+                img.crossOrigin = "anonymous";
+
+                img.onload = function() {
+
+                    var canvas = document.createElement("canvas");
+                    var ctx = canvas.getContext("2d");
+
+                    var w = 512;
+                    var h = Math.round(img.height * (512 / img.width));
+
+                    canvas.width = w;
+                    canvas.height = h;
+
+                    ctx.drawImage(img, 0, 0, w, h);
+
+                    var data = ctx.getImageData(0, 0, w, h).data;
+
+                    var normalDiff = 0;
+                    var flippedDiff = 0;
+
+                    for (var y = 0; y < h; y++) {
+
+                        var left = (y * w) * 4;
+                        var right = (y * w + (w - 1)) * 4;
+
+                        for (var c = 0; c < 3; c++) {
+                            normalDiff += Math.abs(data[left + c] - data[right + c]);
+                        }
+                    }
+
+                    for (var y = 0; y < h; y++) {
+
+                        var left = (y * w) * 4;
+                        var right = ((h - 1 - y) * w + (w - 1)) * 4;
+
+                        for (var c = 0; c < 3; c++) {
+                            flippedDiff += Math.abs(data[left + c] - data[right + c]);
+                        }
+                    }
+
+                    callback(flippedDiff < normalDiff);
+                };
+
+                img.src = imageUrl;
+            }
+
+            function extractPanoMetadata(imageUrl, callback) {
+                // not used but let it be here
+                fetch(imageUrl, {
+                    headers: { 'Range': 'bytes=0-65535' } 
+                })
+                .then(r => r.arrayBuffer())
+                .then(buffer => {
+                    const text = new TextDecoder("utf-8").decode(buffer);
+
+                    const hasGPano = text.includes("GPano:");
+                    const isGooglePano =
+                        text.includes("GPano:ProjectionType") ||
+                        text.includes("equirectangular");
+
+                    const isDJI =
+                        text.includes("DJI") ||
+                        text.includes("drone-dji");
+
+                    callback({
+                        hasGPano,
+                        isGooglePano,
+                        isDJI
+                    });
+                })
+                .catch(() => callback(null));
+            }
+          
+            function loadTextureWithAutoFlip(imageUrl) {
+                detectFlipByPixels(imageUrl, function(needFlip) {
+                    createSphere(imageUrl, needFlip);
+                });
+            }
+
+            function createSphere(imageUrl, needFlip) {
+                textureLoader.load(imageUrl, function(texture) {
+                    texture.wrapS = THREE.ClampToEdgeWrapping;
+                    texture.wrapT = THREE.ClampToEdgeWrapping;
+                    texture.minFilter = THREE.LinearFilter;
+                    texture.magFilter = THREE.LinearFilter;
+
+                    if (panoSphere) {
+                        scene.remove(panoSphere);
+                        panoSphere.geometry.dispose();
+                        panoSphere.material.map.dispose();
+                        panoSphere.material.dispose();
+                    }
+                    const geometry = new THREE.SphereGeometry(500, 64, 32);
+                    // invert the sphere to view from inside
+                    geometry.scale(-1, 1, 1);
+
+                    if (needFlip) {
+                        //geometry.rotateY(Math.PI);
+                    } else {
+                    }
+
+                    const material = new THREE.MeshBasicMaterial({ map: texture });
+
+                    panoSphere = new THREE.Mesh(geometry, material);
+                    scene.add(panoSphere);
+
+                    updateFOV(fov);
+                    requestRender();
+                });
+            }
+
+            loadTextureWithAutoFlip('image.jpg');
+
+            function updateFOV(newFov) {
+                fov = Math.max(minFov, Math.min(maxFov, newFov));
+                camera.fov = fov;
+                camera.rotation.x = lat * (Math.PI / 180);
+                camera.updateProjectionMatrix();
+                return fov;
+            }
+
+            function updateCameraPosition() {
+                cameraContainer.rotation.set(0, 0, 0);
+                cameraContainer.rotateY(lon);
+                cameraContainer.rotateX(lat);
+                camera.position.set(0, 0, 0);
+
+            }
+
+            // angle normalize
+            function normalizeAngle(angle) {
+                // angle in range [-PI, PI]
+                while (angle > Math.PI) angle -= 2 * Math.PI;
+                while (angle < -Math.PI) angle += 2 * Math.PI;
+                return angle;
+            }
+
+            // shortest path
+            function shortestAngleDelta(from, to) {
+                let delta = to - from;
+                while (delta > Math.PI) delta -= 2 * Math.PI;
+                while (delta < -Math.PI) delta += 2 * Math.PI;
+                return delta;
+            }
+
+            // listeners
+            renderer.domElement.addEventListener('mousedown', (e) => {
+                if (e.button !== 0) return;
+                
+                isMouseDown = true;
+                lastMouseX = e.clientX;
+                lastMouseY = e.clientY;
+                
+                // reset velocity speed
+                velocityX = 0;
+                velocityY = 0;
+                
+                renderer.domElement.style.cursor = 'grabbing';
+                e.preventDefault();
+                requestRender();
+            });
+
+            window.addEventListener('mousemove', (e) => {
+                if (!isMouseDown) return;
+                
+                const deltaX = e.clientX - lastMouseX;
+                const deltaY = e.clientY - lastMouseY;
+                
+                targetLon += deltaX * rotationSpeed;
+                targetLat += deltaY * rotationSpeed;
+                
+                targetLat = Math.max(minLat, Math.min(maxLat, targetLat));
+                
+                targetLon = normalizeAngle(targetLon);
+                
+                velocityX = deltaX * rotationSpeed * inertia;
+                velocityY = -deltaY * rotationSpeed * inertia;
+                
+                lastMouseX = e.clientX;
+                lastMouseY = e.clientY;
+                requestRender();
+            });
+
+            window.addEventListener('mouseup', () => {
+                isMouseDown = false;
+                renderer.domElement.style.cursor = 'grab';
+                requestRender();
+            });
+
+            window.addEventListener('mouseleave', () => {
+                isMouseDown = false;
+                renderer.domElement.style.cursor = 'grab';
+            });
+
+            renderer.domElement.addEventListener('wheel', (e) => {
+                e.preventDefault();
+                updateFOV(fov + e.deltaY * 0.05);
+                requestRender();
+            });
+
+            window.addEventListener('resize', onWindowResize, false);
+
+           
+            
+            function onWindowResize() {
+                camera.aspect = window.innerWidth / window.innerHeight;
+                camera.updateProjectionMatrix();
+                renderer.setSize(window.innerWidth, window.innerHeight);
+                requestRender();
+            }
+
+            renderer.domElement.style.cursor = 'grab';
+            // requestRender();
+
+            function animate() {
+                animationRequested = false;
+                let needNextFrame = false;
+                // inertion
+                if (!isMouseDown) {
+                    targetLon += velocityX;
+                    targetLat += velocityY;
+
+                    targetLat = Math.max(minLat, Math.min(maxLat, targetLat));
+                    targetLon = normalizeAngle(targetLon);
+
+                    velocityX *= friction;
+                    velocityY *= friction;
+
+                    if (Math.abs(velocityX) > 0.00001 || Math.abs(velocityY) > 0.00001) {
+                        needNextFrame = true;
+                    } else {
+                        velocityX = 0;
+                        velocityY = 0;
+                    }
+                } else {
+                    needNextFrame = true;
+                }
+
+                // smooth camera movements
+                const lonDelta = shortestAngleDelta(lon, targetLon);
+                const latDelta = (targetLat - lat);
+
+                if (Math.abs(lonDelta) > 0.00001 || Math.abs(latDelta) > 0.00001) {
+                    lon += lonDelta * 0.1;
+                    lat += latDelta * 0.1;
+                    lon = normalizeAngle(lon);
+                    needNextFrame = true;
+                }
+
+                updateCameraPosition();
+                emitViewChange();
+                renderer.render(scene, camera);
+
+                // see next frame
+                if (needNextFrame) {
+                    requestRender();
+                }
+            }
+
+            // animate();
+
+            window.loadPanorama = function(imageUrl) {
+                loadTextureWithAutoFlip(imageUrl);
+              
+            };
+
+            window.lookAt = function(pitch, yaw, duration = 1000) {
+                const targetLat = Math.max(minLat, Math.min(maxLat, pitch * Math.PI / 180));
+                const targetLon = normalizeAngle(yaw * Math.PI / 180);
+                
+                const startLat = lat;
+                const startLon = lon;
+                const startTime = Date.now();
+
+                function animateLook() {
+                    const now = Date.now();
+                    const elapsed = now - startTime;
+                    const progress = Math.min(elapsed / duration, 1);
+                    
+                    lat = startLat + (targetLat - startLat) * progress;
+                    
+                    // shortest path horizontal
+                    const lonDelta = shortestAngleDelta(startLon, targetLon);
+                    lon = startLon + lonDelta * progress;
+                    
+                    lon = normalizeAngle(lon);
+                    
+                    updateCameraPosition();
+                    
+                    if (progress < 1) {
+                        requestAnimationFrame(animateLook);
+                    }
+                    requestRender();
+                }
+                
+                animateLook();
+            };
+
+            window.getView = function() {
+                return {
+                    pitch: pitch,
+                    yaw: lon * 180 / Math.PI,
+                    fov: fov
+                };
+            };
+
+            window.setZoom = function(zoom) {
+                updateFOV(zoom);
+            };
+
+            window.getFovBounds = function() {
+                return {
+                    min: minFov,
+                    max: maxFov,
+                    current: fov
+                };
+            };
+
+            window.rotateToAngle = function(angleDeg, smooth = true) {
+                const target = normalizeAngle(angleDeg * Math.PI / 180);
+                angle_init = 90 + angleDeg;
+                diff_angle = 360 - angleDeg
+                alt_lon = diff_angle * Math.PI / 180;
+                velocityX = 0;
+                velocityY = 0;
+                if (smooth) {
+                    targetLon = alt_lon;
+                    requestRender();
+                } else {
+                    // lon = target;
+                    targetLon = alt_lon;
+                    updateCameraPosition();
+                    renderer.render(scene, camera);
+                } 
+            };
+        })
+
+        
+    </script>
+</body>
+</html>
